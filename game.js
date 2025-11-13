@@ -63,7 +63,8 @@
     score,         // the current score
     vscore,        // the currently displayed score (it catches up to score in small chunks - like a spinning slot machine)
     rows,          // number of completed rows in the current game
-    step;          // how long before current piece drops by 1 row
+    step,          // how long before current piece drops by 1 row
+    useBeamSearch = false; // Toggle between heuristic and beam search agent
 
     //-------------------------------------------------------------------------
     // tetris pieces
@@ -107,7 +108,7 @@
     // check if a piece can fit into a position in the grid
     //-----------------------------------------------------
     function occupied(type, x, y, dir) {
-        var result = false
+        var result = false;
         eachblock(type, x, y, dir, function(x, y) {
             if ((x < 0) || (x >= nx) || (y < 0) || (y >= ny) || getBlock(x,y))
                 result = true;
@@ -127,7 +128,7 @@
     function randomPiece() {
         if (pieces.length === 0)
             pieces = [i,i,i,i,j,j,j,j,l,l,l,l,o,o,o,o,s,s,s,s,t,t,t,t,z,z,z,z];
-        var type = pieces.splice(random(0, pieces.length-1), 1)[0];
+        var type = pieces.splice(Math.floor(random(0, pieces.length)), 1)[0];
         return { type: type, dir: DIR.UP, x: Math.round(random(0, nx - type.size)), y: 0 };
     }
 
@@ -155,6 +156,7 @@
 
         resize(); // setup all our sizing information
         reset();  // reset the per-game variables
+        invalidateAgent(); // initialize agent display
         frame();  // start the first frame
 
     }
@@ -190,6 +192,12 @@
                 case KEY.DOWN:   actions.push(DIR.DOWN);  handled = true; break;
                 case KEY.ESC:    lose();                  handled = true; break;
                 case KEY.SPACE:  actions.push(DIR.AI);    handled = true; break;
+                case 66:         // we need to use'B' key to toggle beam search
+                    useBeamSearch = !useBeamSearch;
+                    invalidateAgent();
+                    console.log('Agent mode: ' + (useBeamSearch ? 'Beam Search' : 'Heuristic'));
+                    handled = true;
+                    break;
             }
         }
         else if (ev.keyCode == KEY.SPACE) {
@@ -197,7 +205,7 @@
             handled = true;
         }
         if (handled)
-            ev.preventDefault(); // prevent arrow keys from scrolling the page (supported in IE9+ and all other browsers)
+            ev.preventDefault();
     }
 
     //-------------------------------------------------------------------------
@@ -235,7 +243,10 @@
         if (playing) {
             if (vscore < score)
                 setVisualScore(vscore + 1);
-            handle(actions.shift());
+            var action = actions.shift();
+            if (action !== undefined) {
+                handle(action);
+            }
             dt = dt + idt;
             if (dt > step) {
                 dt = dt - step;
@@ -302,7 +313,7 @@
 
     function removeLines() {
         var x, y, complete, n = 0;
-        for(y = ny ; y > 0 ; --y) {
+        for(y = ny - 1 ; y >= 0 ; --y) {
             complete = true;
             for(x = 0 ; x < nx ; ++x) {
                 if (!getBlock(x, y)) {
@@ -312,13 +323,13 @@
             }
             if (complete) {
                 removeLine(y);
-                y = y + 1; // recheck same line
+                y = y + 1;
                 n++;
             }
         }
         if (n > 0) {
             addRows(n);
-            addScore(100*Math.pow(2,n-1)); // 1: 100, 2: 200, 3: 400, 4: 800
+            addScore(100*Math.pow(2,n-1)); 
         }
     }
 
@@ -340,15 +351,17 @@
     function invalidateNext()     { invalid.next   = true; }
     function invalidateScore()    { invalid.score  = true; }
     function invalidateRows()     { invalid.rows   = true; }
+    function invalidateAgent()    { invalid.agent  = true; }
 
     function draw() {
         ctx.save();
         ctx.lineWidth = 1;
-        ctx.translate(0.5, 0.5); // for crisp 1px black lines
+        ctx.translate(0.5, 0.5); 
         drawCourt();
         drawNext();
         drawScore();
         drawRows();
+        drawAgent();
         ctx.restore();
     }
 
@@ -364,14 +377,14 @@
                         drawBlock(ctx, x, y, block.color);
                 }
             }
-            ctx.strokeRect(0, 0, nx*dx - 1, ny*dy - 1); // court boundary
+            ctx.strokeRect(0, 0, nx*dx - 1, ny*dy - 1);
             invalid.court = false;
         }
     }
 
     function drawNext() {
         if (invalid.next) {
-            var padding = (nu - next.type.size) / 2; // half-arsed attempt at centering next piece display
+            var padding = (nu - next.type.size) / 2;
             uctx.save();
             uctx.translate(0.5, 0.5);
             uctx.clearRect(0, 0, nu*dx, nu*dy);
@@ -397,6 +410,13 @@
         }
     }
 
+    function drawAgent() {
+        if (invalid.agent) {
+            html('agent', useBeamSearch ? 'Beam Search' : 'Heuristic');
+            invalid.agent = false;
+        }
+    }
+
     function drawPiece(ctx, type, x, y, dir) {
         eachblock(type, x, y, dir, function(x, y) {
             drawBlock(ctx, x, y, type.color);
@@ -410,12 +430,31 @@
     }
 
     function agent() {
-        let bestMove = selectBestMove(current);
+        let bestMove;
+        
+        if (useBeamSearch) {
+            // Use Beam Search agent
+            bestMove = selectBestMoveBeamSearch(current);
+        } else {
+            // Use Heuristic agent
+            bestMove = selectBestMove(current);
+        }
+        
         if (bestMove) {
-            let dropY = getDropPosition(bestMove.piece, bestMove.x);
-            current.x = bestMove.x;
-            current.y = dropY;
-            current.dir = bestMove.piece.dir;
+            let dropY;
+            if (useBeamSearch) {
+                // Beam search returns move with x, y, dir directly
+                dropY = bestMove.y;
+                current.x = bestMove.x;
+                current.y = dropY;
+                current.dir = bestMove.dir;
+            } else {
+                // Heuristic agent returns move with piece object
+                dropY = getDropPosition(bestMove.piece, bestMove.x);
+                current.x = bestMove.x;
+                current.y = dropY;
+                current.dir = bestMove.piece.dir;
+            }
             drop();
         }
     }
